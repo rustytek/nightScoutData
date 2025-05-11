@@ -1,148 +1,124 @@
-"""DataUpdateCoordinator for the Nightscout Data integration."""
+"""DataUpdateCoordinator for the Nightscout integration."""
 from __future__ import annotations
 
-import asyncio
 from datetime import timedelta
 import logging
 from typing import Any, cast
 
-import aiohttp
+from py_nightscout import Api as NightscoutAPI
+# Remove the specific models import that's causing the error
+# from py_nightscout.models import SGV, DeviceStatus, NightscoutStatus
 
-from homeassistant.components.sensor import (
-    ATTR_STATE_CLASS,
-    SensorDeviceClass,
-    SensorStateClass,
-)
 from homeassistant.config_entries import ConfigEntry
-from homeassistant.const import ATTR_DEVICE_CLASS, ATTR_ICON, ATTR_UNIT_OF_MEASUREMENT
 from homeassistant.core import HomeAssistant
-from homeassistant.exceptions import ConfigEntryAuthFailed
-from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
-import homeassistant.util.dt as dt_util
+from homeassistant.helpers.update_coordinator import DataUpdateCoordinator
 
-from .const import (
-    ALARM_VALUE,
-    BASAL_VALUE,
-    COB_VALUE,
-    DOMAIN,
-    GLUCOSE_VALUE,
-    IOB_VALUE,
-    TIME_VALUE,
-    TREND_VALUE,
-    UPDATE_INTERVAL_SECONDS,
-)
+from .const import DOMAIN
 
 _LOGGER = logging.getLogger(__name__)
 
 
 class NightscoutDataUpdateCoordinator(DataUpdateCoordinator[dict[str, Any]]):
-    """Nightscout Data Update Coordinator."""
+    """The Nightscout Data Update Coordinator."""
+
+    config_entry: ConfigEntry
 
     def __init__(
-        self,
-        hass: HomeAssistant,
-        server_url: str,
-        api_key: str | None,
+        self, hass: HomeAssistant, api: NightscoutAPI, entry: ConfigEntry
     ) -> None:
-        """Initialize the coordinator."""
+        """Initialize the Nightscout coordinator."""
+        self.api = api
+        self.config_entry = entry
+
         super().__init__(
             hass,
             _LOGGER,
             name=DOMAIN,
-            update_interval=timedelta(seconds=UPDATE_INTERVAL_SECONDS),
+            update_interval=timedelta(minutes=1),
         )
-        if not server_url.endswith("/"):
-            server_url += "/"
-        self.server_url = server_url
-        self.api_key = api_key
-
-    def _get_url(self, path: str) -> str:
-        """Get full URL with API key if needed."""
-        url = f"{self.server_url}{path}"
-        
-        # Check if URL already has query parameters
-        if "?" in url:
-            # If URL already has parameters, append with &
-            if self.api_key:
-                url += f"&token={self.api_key}"
-        else:
-            # If no parameters yet, use ? to start query string
-            if self.api_key:
-                url += f"?token={self.api_key}"
-                
-        _LOGGER.debug("Generated URL: %s", url.replace(self.api_key or "", "[REDACTED]"))
-        return url
-
-    def _process_entries(self, entries: list[dict[str, Any]]) -> dict[str, Any]:
-        """Process entries and return the latest data."""
-        if not entries:
-            return {}
-        
-        latest_entry = entries[0]
-        
-        data = {
-            GLUCOSE_VALUE: latest_entry.get("sgv"),
-            TIME_VALUE: latest_entry.get("dateString"),
-            TREND_VALUE: latest_entry.get("direction"),
-        }
-        
-        return data
 
     async def _async_update_data(self) -> dict[str, Any]:
-        """Fetch data from Nightscout API."""
-        session_timeout = aiohttp.ClientTimeout(total=10)
-        result: dict[str, Any] = {}
-        
+        """Fetch data from Nightscout."""
+        sgv_mgdl_val = None
+        sgv_mmol_val = None
+        delta_mgdl = None
+        delta_mmol = None
+        direction = None
+        device_status = {}
+        sensor_age = None
+        cannula_age = None
+
+        # Only attempt to retrieve SGV values if enabled
+        if self.config_entry.data.get("show_sgv", True):
+            try:
+                sgv_response = await self.api.get_sgvs(count=1)
+                if sgv_response:
+                    sgv_mgdl_val = cast(float, sgv_response[0].sgv)
+                    sgv_mmol_val = cast(float, sgv_response[0].mmol)
+                    delta_mgdl = cast(float, sgv_response[0].bgdelta)
+                    delta_mmol = delta_mgdl / 18.0
+                    direction = sgv_response[0].direction
+            except Exception as error:  # pylint: disable=broad-except
+                _LOGGER.error("Error retrieving Nightscout SGV: %s", error)
+
+        # Retrieve the device status which contains pump info
         try:
-            async with aiohttp.ClientSession(timeout=session_timeout) as session:
-                # Fetch glucose data
-                glucose_url = self._get_url("api/v1/entries/sgv?count=1")
-                async with session.get(glucose_url) as resp:
-                    if resp.status == 401 or resp.status == 403:
-                        _LOGGER.error("Authentication failed for Nightscout. Check your API key.")
-                        raise ConfigEntryAuthFailed(f"Authentication failed with status code: {resp.status}. Verify your API key.")
+            device_status_response = await self.api.get_device_status()
+            if device_status_response:
+                # Extract existing pump info (for iob, basal, etc.)
+                if hasattr(device_status_response[0], "pump"):
+                    device_status = device_status_response[0].pump
+
+                # Extract SAGE and CAGE if available
+                # These are typically stored in the pump status or device status
+                # The exact location depends on Nightscout setup and pump type
+                for status in device_status_response:
+                    # For OpenAPS and Loop integration
+                    if hasattr(status, "pump") and status.pump:
+                        pump_status = status.pump
+                        if hasattr(pump_status, "reservoir"):
+                            # Check for Loop/OpenAPS format
+                            if hasattr(pump_status, "clock"):
+                                # Try to find sage/cage in different possible locations
+                                if hasattr(pump_status, "status") and pump_status.status:
+                                    if "cage" in pump_status.status:
+                                        cannula_age = float(pump_status.status["cage"]) / 3600  # Convert to hours
+                                    if "sage" in pump_status.status:
+                                        sensor_age = float(pump_status.status["sage"]) / 3600  # Convert to hours
                     
-                    if resp.status != 200:
-                        error_text = await resp.text()
-                        error_message = f"Error fetching glucose data: Status {resp.status}. Response: {error_text[:200]}"
-                        _LOGGER.error(error_message)
-                        raise UpdateFailed(error_message)
+                    # For xDrip and other systems that report directly in devicestatus
+                    if hasattr(status, "cage") and status.cage is not None:
+                        cannula_age = float(status.cage) / 3600  # Convert to hours
+                    if hasattr(status, "sage") and status.sage is not None:
+                        sensor_age = float(status.sage) / 3600  # Convert to hours
                     
-                    try:
-                        entries = await resp.json()
-                        glucose_data = self._process_entries(entries)
-                        result.update(glucose_data)
-                    except Exception as e:
-                        _LOGGER.error("Error parsing glucose data: %s", str(e))
-                        raise UpdateFailed(f"Failed to parse glucose data: {str(e)}")
-                
-                # Fetch treatment data for IOB, COB and basal
-                treatments_url = self._get_url("api/v1/treatments?count=1")
-                async with session.get(treatments_url) as resp:
-                    if resp.status != 200:
-                        _LOGGER.warning(
-                            "Error fetching treatment data: %s", resp.status
-                        )
-                    else:
-                        treatments = await resp.json()
-                        if treatments:
-                            latest = treatments[0]
-                            result[IOB_VALUE] = latest.get("insulin")
-                            result[COB_VALUE] = latest.get("carbs")
-                            result[BASAL_VALUE] = latest.get("rate")
-                
-                # Fetch status for alarms
-                status_url = self._get_url("api/v1/status")
-                async with session.get(status_url) as resp:
-                    if resp.status != 200:
-                        _LOGGER.warning(
-                            "Error fetching status data: %s", resp.status
-                        )
-                    else:
-                        status = await resp.json()
-                        result[ALARM_VALUE] = status.get("status") == "warn"
-                
-                return result
-        
-        except aiohttp.ClientError as error:
-            raise UpdateFailed(f"Error communicating with API: {error}")
+                    # Check in a common nested location
+                    if hasattr(status, "device") and status.device:
+                        if hasattr(status.device, "cage") and status.device.cage is not None:
+                            cannula_age = float(status.device.cage) / 3600
+                        if hasattr(status.device, "sage") and status.device.sage is not None:
+                            sensor_age = float(status.device.sage) / 3600
+
+        except Exception as error:  # pylint: disable=broad-except
+            _LOGGER.error("Error retrieving Nightscout device status: %s", error)
+
+        # Get the server status
+        server_status = {}
+        try:
+            server_status_response = await self.api.get_server_status()
+            if server_status_response:
+                server_status = server_status_response
+        except Exception as error:  # pylint: disable=broad-except
+            _LOGGER.error("Error retrieving Nightscout status: %s", error)
+
+        return {
+            "sgv": sgv_mgdl_val,
+            "sgv_mmol": sgv_mmol_val,
+            "delta": delta_mgdl,
+            "delta_mmol": delta_mmol,
+            "direction": direction,
+            "device": device_status,
+            "server": server_status,
+            "sensor_age": sensor_age,
+            "cannula_age": cannula_age,
+        }

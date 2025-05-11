@@ -3,207 +3,207 @@ from __future__ import annotations
 
 from typing import Any, cast
 
-from homeassistant.components.sensor import (
-    SensorDeviceClass,
-    SensorEntity,
-    SensorEntityDescription,
-    SensorStateClass,
-)
+from homeassistant.components.sensor import SensorEntity
 from homeassistant.config_entries import ConfigEntry
-from homeassistant.const import (
-    CONCENTRATION_MILLIGRAMS_DECILITER,
-    EntityCategory,
-    UnitOfMass,
-)
 from homeassistant.core import HomeAssistant
-from homeassistant.helpers.entity import DeviceInfo
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
-from homeassistant.helpers.typing import StateType
-from homeassistant.helpers.update_coordinator import (
-    CoordinatorEntity,
-    DataUpdateCoordinator,
-)
+from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
-from .const import (
-    ALARM_VALUE,
-    BASAL_VALUE,
-    COB_VALUE,
-    CONF_SENSOR_ALARM,
-    CONF_SENSOR_BASAL,
-    CONF_SENSOR_COB,
-    CONF_SENSOR_GL,
-    CONF_SENSOR_IOB,
-    DOMAIN,
-    GLUCOSE_VALUE,
-    IOB_VALUE,
-    TIME_VALUE,
-    TREND_VALUE,
-)
+from .const import DOMAIN, MANUFACTURER, SENSOR_TYPES
 from .coordinator import NightscoutDataUpdateCoordinator
-
-TREND_ICONS = {
-    "DoubleUp": "mdi:arrow-up-thick",
-    "SingleUp": "mdi:arrow-up",
-    "FortyFiveUp": "mdi:arrow-top-right",
-    "Flat": "mdi:arrow-right",
-    "FortyFiveDown": "mdi:arrow-bottom-right",
-    "SingleDown": "mdi:arrow-down",
-    "DoubleDown": "mdi:arrow-down-thick",
-    "None": "mdi:help-rhombus",
-    "NOT COMPUTABLE": "mdi:alert",
-    "RATE OUT OF RANGE": "mdi:alert-circle",
-}
-
-
-SENSOR_TYPES: dict[str, SensorEntityDescription] = {
-    GLUCOSE_VALUE: SensorEntityDescription(
-        key=GLUCOSE_VALUE,
-        name="Glucose Level",
-        native_unit_of_measurement=CONCENTRATION_MILLIGRAMS_DECILITER,
-        state_class=SensorStateClass.MEASUREMENT,
-        icon="mdi:water-percent",
-    ),
-    IOB_VALUE: SensorEntityDescription(
-        key=IOB_VALUE,
-        name="Insulin on Board",
-        native_unit_of_measurement="U",
-        state_class=SensorStateClass.MEASUREMENT,
-        icon="mdi:medication-outline",
-    ),
-    COB_VALUE: SensorEntityDescription(
-        key=COB_VALUE,
-        name="Carbs on Board",
-        native_unit_of_measurement=UnitOfMass.GRAMS,
-        state_class=SensorStateClass.MEASUREMENT,
-        icon="mdi:food-apple",
-    ),
-    BASAL_VALUE: SensorEntityDescription(
-        key=BASAL_VALUE,
-        name="Basal Rate",
-        native_unit_of_measurement="U/hr",
-        state_class=SensorStateClass.MEASUREMENT,
-        icon="mdi:doctor",
-    ),
-    ALARM_VALUE: SensorEntityDescription(
-        key=ALARM_VALUE,
-        name="Alarm",
-        icon="mdi:alarm",
-    ),
-}
 
 
 async def async_setup_entry(
     hass: HomeAssistant, entry: ConfigEntry, async_add_entities: AddEntitiesCallback
 ) -> None:
     """Set up the Nightscout sensors."""
-    coordinator = hass.data[DOMAIN][entry.entry_id]
+    coordinator: NightscoutDataUpdateCoordinator = hass.data[DOMAIN][entry.entry_id]
 
-    entities = []
+    sensors = []
     
-    # Add glucose sensor if enabled
-    if entry.data.get(CONF_SENSOR_GL, True):
-        entities.append(NightscoutGlucoseSensor(coordinator, SENSOR_TYPES[GLUCOSE_VALUE]))
+    # Get site name, with fallback to the URL or a default value
+    site_name = entry.data.get("site_name", entry.data.get("url", "Nightscout"))
+
+    # Add 'regular' glucose sensors
+    if entry.data.get("show_sgv", True):
+        for sensor_type in (
+            "sgv",
+            "sgv_mmol",
+            "delta",
+            "delta_mmol",
+            "direction",
+        ):
+            sensors.append(
+                NightscoutSensor(
+                    coordinator,
+                    site_name,
+                    coordinator.config_entry.entry_id,
+                    SENSOR_TYPES[sensor_type],
+                )
+            )
+
+    # If pump enabled, add pump sensors
+    if entry.data.get("show_pump", True):
+        # Add standard pump sensors like iob, basal, etc.
+        for sensor_type in (
+            "reservoir",
+            "battery",
+            "iob",
+            "basal_rate",
+        ):
+            sensors.append(
+                NightscoutPumpSensor(
+                    coordinator,
+                    site_name,
+                    coordinator.config_entry.entry_id,
+                    SENSOR_TYPES[sensor_type],
+                )
+            )
+
+    # Add the new sensor age sensors regardless of pump status
+    # These are separate entities that should be available even if pump data isn't shown
+    sensors.append(
+        NightscoutAgeSensor(
+            coordinator,
+            site_name,
+            coordinator.config_entry.entry_id,
+            SENSOR_TYPES["sensor_age"],
+            "sensor_age",
+        )
+    )
     
-    # Add IOB sensor if enabled
-    if entry.data.get(CONF_SENSOR_IOB, True):
-        entities.append(NightscoutSensor(coordinator, SENSOR_TYPES[IOB_VALUE]))
-    
-    # Add COB sensor if enabled
-    if entry.data.get(CONF_SENSOR_COB, True):
-        entities.append(NightscoutSensor(coordinator, SENSOR_TYPES[COB_VALUE]))
-    
-    # Add basal sensor if enabled
-    if entry.data.get(CONF_SENSOR_BASAL, True):
-        entities.append(NightscoutSensor(coordinator, SENSOR_TYPES[BASAL_VALUE]))
-    
-    # Add alarm sensor if enabled
-    if entry.data.get(CONF_SENSOR_ALARM, True):
-        entities.append(NightscoutBinarySensor(coordinator, SENSOR_TYPES[ALARM_VALUE]))
-    
-    async_add_entities(entities)
+    sensors.append(
+        NightscoutAgeSensor(
+            coordinator,
+            site_name,
+            coordinator.config_entry.entry_id,
+            SENSOR_TYPES["cannula_age"],
+            "cannula_age",
+        )
+    )
+
+    async_add_entities(sensors)
 
 
 class NightscoutSensor(CoordinatorEntity, SensorEntity):
     """Implementation of a Nightscout sensor."""
 
-    coordinator: NightscoutDataUpdateCoordinator
-    entity_description: SensorEntityDescription
-
     def __init__(
         self,
         coordinator: NightscoutDataUpdateCoordinator,
-        description: SensorEntityDescription,
+        site_name: str,
+        entry_id: str,
+        description,
     ) -> None:
         """Initialize the sensor."""
         super().__init__(coordinator)
+        self._attr_unique_id = f"{entry_id}_{description.key}"
+        self._attr_device_info = {
+            "identifiers": {(DOMAIN, entry_id)},
+            "name": f"Nightscout ({site_name})",
+            "manufacturer": MANUFACTURER,
+        }
         self.entity_description = description
-        self._attr_unique_id = f"{coordinator.server_url}_{description.key}"
-        self._attr_device_info = DeviceInfo(
-            identifiers={(DOMAIN, coordinator.server_url)},
-            name="Nightscout CGM",
-            manufacturer="Nightscout",
-        )
 
     @property
-    def native_value(self) -> StateType:
+    def native_value(self) -> float | None:
         """Return the state of the sensor."""
-        if self.coordinator.data and self.entity_description.key in self.coordinator.data:
-            return self.coordinator.data[self.entity_description.key]
+        # Make sure we handle None values for missing sgv values
+        if self.entity_description.key == "sgv" and self.coordinator.data:
+            return self.coordinator.data["sgv"]
+        if self.entity_description.key == "sgv_mmol" and self.coordinator.data:
+            return self.coordinator.data["sgv_mmol"]
+        if self.entity_description.key == "delta" and self.coordinator.data:
+            return self.coordinator.data["delta"]
+        if self.entity_description.key == "delta_mmol" and self.coordinator.data:
+            return self.coordinator.data["delta_mmol"]
+        if self.entity_description.key == "direction" and self.coordinator.data:
+            return self.coordinator.data["direction"]
         return None
 
 
-class NightscoutGlucoseSensor(NightscoutSensor):
-    """Implementation of a Nightscout glucose sensor with trend information."""
-
-    @property
-    def icon(self) -> str:
-        """Icon to use in the frontend."""
-        trend = None
-        if self.coordinator.data:
-            trend = self.coordinator.data.get(TREND_VALUE)
-        
-        if trend and trend in TREND_ICONS:
-            return TREND_ICONS[trend]
-        return self.entity_description.icon
-
-    @property
-    def extra_state_attributes(self) -> dict[str, Any]:
-        """Return entity specific state attributes."""
-        attrs = {}
-        if self.coordinator.data:
-            if TREND_VALUE in self.coordinator.data:
-                attrs["trend"] = self.coordinator.data[TREND_VALUE]
-            if TIME_VALUE in self.coordinator.data:
-                attrs["time"] = self.coordinator.data[TIME_VALUE]
-        return attrs
-
-
-class NightscoutBinarySensor(CoordinatorEntity, SensorEntity):
-    """Implementation of a Nightscout alarm binary sensor."""
-
-    coordinator: NightscoutDataUpdateCoordinator
-    entity_description: SensorEntityDescription
-    _attr_device_class = SensorDeviceClass.ENUM
-    _attr_options = ["active", "inactive"]
+class NightscoutPumpSensor(CoordinatorEntity, SensorEntity):
+    """Implementation of a Nightscout pump sensor."""
 
     def __init__(
         self,
         coordinator: NightscoutDataUpdateCoordinator,
-        description: SensorEntityDescription,
+        site_name: str,
+        entry_id: str,
+        description,
     ) -> None:
         """Initialize the sensor."""
         super().__init__(coordinator)
+        self._attr_unique_id = f"{entry_id}_{description.key}"
+        self._attr_device_info = {
+            "identifiers": {(DOMAIN, entry_id)},
+            "name": f"Nightscout ({site_name})",
+            "manufacturer": MANUFACTURER,
+        }
         self.entity_description = description
-        self._attr_unique_id = f"{coordinator.server_url}_{description.key}"
-        self._attr_device_info = DeviceInfo(
-            identifiers={(DOMAIN, coordinator.server_url)},
-            name="Nightscout CGM",
-            manufacturer="Nightscout",
-        )
 
     @property
-    def native_value(self) -> str | None:
-        """Return the state of the binary sensor."""
-        if self.coordinator.data and ALARM_VALUE in self.coordinator.data:
-            return "active" if self.coordinator.data[ALARM_VALUE] else "inactive"
+    def native_value(self) -> float | None:
+        """Return the state of the sensor."""
+        if (
+            not self.coordinator.data
+            or "device" not in self.coordinator.data
+            or not self.coordinator.data["device"]
+        ):
+            return None
+
+        pump_status = self.coordinator.data["device"]
+
+        if self.entity_description.key == "reservoir" and hasattr(
+            pump_status, "reservoir"
+        ):
+            return cast(float, pump_status.reservoir)
+        if self.entity_description.key == "battery" and hasattr(pump_status, "battery"):
+            return cast(float, pump_status.battery)
+        if self.entity_description.key == "iob" and hasattr(pump_status, "iob"):
+            if hasattr(pump_status.iob, "bolusiob"):
+                return cast(float, pump_status.iob.bolusiob)
+        if self.entity_description.key == "basal_rate" and hasattr(
+            pump_status, "extended"
+        ):
+            if hasattr(pump_status.extended, "TempBasalAbsoluteRate"):
+                return cast(float, pump_status.extended.TempBasalAbsoluteRate)
+
         return None
+
+
+class NightscoutAgeSensor(CoordinatorEntity, SensorEntity):
+    """Implementation of an Nightscout age sensor."""
+
+    def __init__(
+        self,
+        coordinator: NightscoutDataUpdateCoordinator,
+        site_name: str,
+        entry_id: str,
+        description,
+        data_key: str,
+    ) -> None:
+        """Initialize the sensor."""
+        super().__init__(coordinator)
+        self._attr_unique_id = f"{entry_id}_{description.key}"
+        self._attr_device_info = {
+            "identifiers": {(DOMAIN, entry_id)},
+            "name": f"Nightscout ({site_name})",
+            "manufacturer": MANUFACTURER,
+        }
+        self.entity_description = description
+        self._data_key = data_key
+
+    @property
+    def native_value(self) -> float | None:
+        """Return the state of the sensor."""
+        if self.coordinator.data and self._data_key in self.coordinator.data:
+            return self.coordinator.data[self._data_key]
+        return None
+
+    @property
+    def available(self) -> bool:
+        """Return True if entity is available."""
+        # Only mark as unavailable if the coordinator itself is unavailable
+        # Sometimes the sensor/cannula age might be None which is expected
+        return self.coordinator.last_update_success

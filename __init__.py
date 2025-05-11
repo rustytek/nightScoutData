@@ -1,57 +1,46 @@
-"""The Nightscout Data integration."""
-from __future__ import annotations
+"""The Nightscout integration."""
 
-import logging
+from aiohttp import ClientError
+from py_nightscout import Api as NightscoutAPI
 
 from homeassistant.config_entries import ConfigEntry
-from homeassistant.const import Platform
+from homeassistant.const import CONF_API_KEY, CONF_URL, Platform
 from homeassistant.core import HomeAssistant
+from homeassistant.exceptions import ConfigEntryNotReady
+from homeassistant.helpers import device_registry as dr
+from homeassistant.helpers.aiohttp_client import async_get_clientsession
+from homeassistant.helpers.entity import SLOW_UPDATE_WARNING
 
-from .const import CONF_API_KEY, CONF_SERVER, DOMAIN
-from .coordinator import NightscoutDataUpdateCoordinator
-
-_LOGGER = logging.getLogger(__name__)
+from .const import DOMAIN
 
 PLATFORMS = [Platform.SENSOR]
+_API_TIMEOUT = SLOW_UPDATE_WARNING - 1
 
 
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
-    """Set up Nightscout Data from a config entry."""
-    server_url = entry.data[CONF_SERVER]
+    """Set up Nightscout from a config entry."""
+    server_url = entry.data[CONF_URL]
     api_key = entry.data.get(CONF_API_KEY)
+    session = async_get_clientsession(hass)
+    api = NightscoutAPI(server_url, session=session, api_secret=api_key)
+    try:
+        status = await api.get_server_status()
+    except (ClientError, TimeoutError, OSError) as error:
+        raise ConfigEntryNotReady from error
 
-    _LOGGER.debug("Setting up Nightscout integration with server %s", server_url)
-    
-    # Create coordinator
-    coordinator = NightscoutDataUpdateCoordinator(
-        hass=hass,
-        server_url=server_url,
-        api_key=api_key,
+    hass.data.setdefault(DOMAIN, {})
+    hass.data[DOMAIN][entry.entry_id] = api
+
+    device_registry = dr.async_get(hass)
+    device_registry.async_get_or_create(
+        config_entry_id=entry.entry_id,
+        identifiers={(DOMAIN, server_url)},
+        manufacturer="Nightscout Foundation",
+        name=status.name,
+        sw_version=status.version,
+        entry_type=dr.DeviceEntryType.SERVICE,
     )
 
-    # Initial data fetch
-    try:
-        await coordinator.async_config_entry_first_refresh()
-    except ConfigEntryAuthFailed as auth_err:
-        _LOGGER.error(
-            "Failed to authenticate with Nightscout server %s: %s",
-            server_url,
-            auth_err
-        )
-        # Re-raise to let HA handle it
-        raise
-    except Exception as err:
-        _LOGGER.exception(
-            "Error during initial data refresh from %s: %s",
-            server_url,
-            err
-        )
-        return False
-
-    # Store the coordinator
-    hass.data.setdefault(DOMAIN, {})[entry.entry_id] = coordinator
-
-    # Set up all platforms
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
 
     return True
@@ -59,7 +48,8 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
 async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """Unload a config entry."""
-    if unload_ok := await hass.config_entries.async_unload_platforms(entry, PLATFORMS):
+    unload_ok = await hass.config_entries.async_unload_platforms(entry, PLATFORMS)
+    if unload_ok:
         hass.data[DOMAIN].pop(entry.entry_id)
 
     return unload_ok
