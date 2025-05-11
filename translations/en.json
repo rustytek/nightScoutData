@@ -1,0 +1,42 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "Connect to your Nightscout server",
+        "data": {
+          "server": "Server URL (e.g., https://yournightscout.herokuapp.com)",
+          "api_key": "API Key (if required)"
+        }
+      },
+      "sensors": {
+        "title": "Configure sensors",
+        "data": {
+          "sensor_glucose_level": "Enable Glucose Level sensor",
+          "sensor_iob": "Enable Insulin on Board sensor",
+          "sensor_cob": "Enable Carbs on Board sensor",
+          "sensor_basal": "Enable Basal Rate sensor",
+          "sensor_alarm": "Enable Alarm sensor"
+        }
+      }
+    },
+    "error": {
+      "cannot_connect": "Failed to connect to Nightscout server. Please check the URL and API key.",
+      "invalid_auth": "Authentication failed. Please verify your API key or check if your Nightscout server requires an API key.",
+      "auth_required": "This Nightscout server requires API token authentication. Please add your API key.",
+      "unknown": "Unexpected error occurred."
+    },
+    "abort": {
+      "already_configured": "This Nightscout server is already configured."
+    }
+  },
+  "entity": {
+    "sensor": {
+      "alarm": {
+        "state": {
+          "active": "Active",
+          "inactive": "Inactive"
+        }
+      }
+    }
+  }
+}
