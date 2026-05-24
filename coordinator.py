@@ -1,13 +1,11 @@
 """DataUpdateCoordinator for the Nightscout integration."""
 from __future__ import annotations
 
-from datetime import timedelta
+from datetime import datetime, timedelta, timezone
 import logging
-from typing import Any, cast
+from typing import Any
 
 from py_nightscout import Api as NightscoutAPI
-# Remove the specific models import that's causing the error
-# from py_nightscout.models import SGV, DeviceStatus, NightscoutStatus
 
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
@@ -48,61 +46,33 @@ class NightscoutDataUpdateCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         sensor_age = None
         cannula_age = None
 
-        # Only attempt to retrieve SGV values if enabled
         if self.config_entry.data.get("show_sgv", True):
             try:
-                sgv_response = await self.api.get_sgvs(count=1)
+                sgv_response = await self.api.get_sgvs()
                 if sgv_response:
-                    sgv_mgdl_val = cast(float, sgv_response[0].sgv)
-                    sgv_mmol_val = cast(float, sgv_response[0].mmol)
-                    delta_mgdl = cast(float, sgv_response[0].bgdelta)
-                    delta_mmol = delta_mgdl / 18.0
-                    direction = sgv_response[0].direction
+                    entry = sgv_response[0]
+                    sgv_mgdl_val = float(entry.sgv)
+                    sgv_mmol_val = float(entry.sgv_mmol)
+                    raw_delta = getattr(entry, "delta", None)
+                    if raw_delta is not None:
+                        delta_mgdl = float(raw_delta)
+                        delta_mmol = round(delta_mgdl / 18.0, 2)
+                    direction = entry.direction
             except Exception as error:  # pylint: disable=broad-except
                 _LOGGER.error("Error retrieving Nightscout SGV: %s", error)
 
-        # Retrieve the device status which contains pump info
         try:
-            device_status_response = await self.api.get_device_status()
+            device_status_response = await self.api.get_devices_status()
             if device_status_response:
-                # Extract existing pump info (for iob, basal, etc.)
-                if hasattr(device_status_response[0], "pump"):
-                    device_status = device_status_response[0].pump
-
-                # Extract SAGE and CAGE if available
-                # These are typically stored in the pump status or device status
-                # The exact location depends on Nightscout setup and pump type
-                for status in device_status_response:
-                    # For OpenAPS and Loop integration
-                    if hasattr(status, "pump") and status.pump:
-                        pump_status = status.pump
-                        if hasattr(pump_status, "reservoir"):
-                            # Check for Loop/OpenAPS format
-                            if hasattr(pump_status, "clock"):
-                                # Try to find sage/cage in different possible locations
-                                if hasattr(pump_status, "status") and pump_status.status:
-                                    if "cage" in pump_status.status:
-                                        cannula_age = float(pump_status.status["cage"]) / 3600  # Convert to hours
-                                    if "sage" in pump_status.status:
-                                        sensor_age = float(pump_status.status["sage"]) / 3600  # Convert to hours
-                    
-                    # For xDrip and other systems that report directly in devicestatus
-                    if hasattr(status, "cage") and status.cage is not None:
-                        cannula_age = float(status.cage) / 3600  # Convert to hours
-                    if hasattr(status, "sage") and status.sage is not None:
-                        sensor_age = float(status.sage) / 3600  # Convert to hours
-                    
-                    # Check in a common nested location
-                    if hasattr(status, "device") and status.device:
-                        if hasattr(status.device, "cage") and status.device.cage is not None:
-                            cannula_age = float(status.device.cage) / 3600
-                        if hasattr(status.device, "sage") and status.device.sage is not None:
-                            sensor_age = float(status.device.sage) / 3600
-
+                latest = device_status_response[0]
+                if hasattr(latest, "pump") and latest.pump:
+                    device_status = latest.pump
         except Exception as error:  # pylint: disable=broad-except
             _LOGGER.error("Error retrieving Nightscout device status: %s", error)
 
-        # Get the server status
+        sensor_age = await self._get_treatment_age("Sensor Change")
+        cannula_age = await self._get_treatment_age("Site Change")
+
         server_status = {}
         try:
             server_status_response = await self.api.get_server_status()
@@ -122,3 +92,27 @@ class NightscoutDataUpdateCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             "sensor_age": sensor_age,
             "cannula_age": cannula_age,
         }
+
+    async def _get_treatment_age(self, event_type: str) -> float | None:
+        """Return hours elapsed since the most recent treatment of the given event type."""
+        try:
+            session = self.api._session
+            if session is None:
+                return None
+            url = f"{self.api.server_url}/api/v1/treatments.json"
+            params = {"find[eventType]": event_type, "count": "1"}
+            async with session.get(url, params=params, **self.api._api_kwargs) as resp:
+                if resp.status != 200:
+                    return None
+                data = await resp.json()
+                if not data:
+                    return None
+                created_at = data[0].get("created_at")
+                if not created_at:
+                    return None
+                ts = datetime.fromisoformat(created_at.replace("Z", "+00:00"))
+                age_hours = (datetime.now(timezone.utc) - ts).total_seconds() / 3600
+                return round(age_hours, 1)
+        except Exception as error:  # pylint: disable=broad-except
+            _LOGGER.error("Error calculating %s age: %s", event_type, error)
+            return None
