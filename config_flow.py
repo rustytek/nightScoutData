@@ -34,7 +34,7 @@ async def _validate_input(data: dict[str, Any]) -> dict[str, str]:
         raise InputValidationError("cannot_connect") from error
 
     # Return info to be stored in the config entry.
-    return {"title": status.name}
+    return {"title": status.name, "site_name": status.name}
 
 
 class NightscoutConfigFlow(ConfigFlow, domain=DOMAIN):
@@ -60,7 +60,10 @@ class NightscoutConfigFlow(ConfigFlow, domain=DOMAIN):
                 _LOGGER.exception("Unexpected exception")
                 errors["base"] = "unknown"
             else:
-                return self.async_create_entry(title=info["title"], data=user_input)
+                return self.async_create_entry(
+                    title=info["title"],
+                    data={**user_input, "site_name": info["site_name"]},
+                )
 
         return self.async_show_form(
             step_id="user", data_schema=DATA_SCHEMA, errors=errors
