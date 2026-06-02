@@ -51,8 +51,10 @@ class NightscoutDataUpdateCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 sgv_response = await self.api.get_sgvs()
                 if sgv_response:
                     entry = sgv_response[0]
-                    sgv_mgdl_val = float(entry.sgv)
-                    sgv_mmol_val = float(entry.sgv_mmol)
+                    raw_sgv = getattr(entry, "sgv", None)
+                    if raw_sgv is not None:
+                        sgv_mgdl_val = float(raw_sgv)
+                        sgv_mmol_val = round(float(raw_sgv) / 18.0, 1)
                     raw_delta = getattr(entry, "delta", None)
                     if raw_delta is not None:
                         delta_mgdl = float(raw_delta)
