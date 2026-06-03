@@ -14,11 +14,13 @@ Custom Home Assistant integration (`custom_components/nightscout`) for pulling C
   - Config entry created via UI config flow (URL + optional API key)
   - No reconfigure flow currently — to change URL, delete entry and re-add
 
-- `nightscout_sensors.yaml` — REST sensor config (deployed to `/config/` on HA)
+- `nightscout_sensors.yaml` — REST sensor config tracked in this repo and deployed to `/config/` on HA
   - Fetches last 5 treatments from Nightscout treatments API
   - Creates `sensor.amelia_omnipod_last_change`, `sensor.amelia_dexcom_last_change`, and Ethan equivalents
   - URLs stored as `!secret nightscout_amelia_url` and `!secret nightscout_ethan_url` in HA secrets.yaml
   - Template sensors in `configuration.yaml` derive pod/sensor due dates from these REST sensors
+  - After editing, deploy to HA via Samba (`\\192.168.0.156\config\`) and run `rest.reload` service
+  - **Gotcha:** if these entities are ever disabled via Settings → Entities in the HA UI, the pod/sensor change automations will silently stop firing (no traces). Re-enable via `ha_set_entity(enabled=True)` then call `rest.reload`.
 
 ## Local Nightscout Add-ons (HAOS)
 
