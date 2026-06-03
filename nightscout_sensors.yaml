@@ -1,0 +1,81 @@
+# ============================================================
+# nightscout_sensors.yaml
+# Add to your configuration.yaml:
+#   rest: !include nightscout_sensors.yaml
+# OR if you already have rest: blocks, paste the entries in.
+# ============================================================
+
+# -----------------------------------------------------------
+# Fetch last 5 treatments — catches recent pod & sensor events
+# even if they happened close together
+# -----------------------------------------------------------
+- resource: !secret nightscout_amelia_url
+  scan_interval: 3600  # Poll every hour; automations can also force refresh
+  sensor:
+
+    # ---- OMNIPOD: Last Site Change -------------------------
+    - name: "Amelia Omnipod Last Change"
+      unique_id: amelia_omnipod_last_change
+      value_template: >
+        {% set treatments = value_json %}
+        {% set pod = treatments | selectattr('eventType', 'equalto', 'Site Change') | list %}
+        {% if pod | length > 0 %}
+          {{ pod[0].created_at }}
+        {% else %}
+          unknown
+        {% endif %}
+      device_class: timestamp
+      icon: mdi:needle
+
+    # ---- DEXCOM: Last Sensor Start/Change ------------------
+    - name: "Amelia Dexcom Last Change"
+      unique_id: amelia_dexcom_last_change
+      value_template: >
+        {% set treatments = value_json %}
+        {% set sensor = treatments
+            | selectattr('eventType', 'in', ['Sensor Start', 'Sensor Change'])
+            | list %}
+        {% if sensor | length > 0 %}
+          {{ sensor[0].created_at }}
+        {% else %}
+          unknown
+        {% endif %}
+      device_class: timestamp
+      icon: mdi:heart-pulse
+
+# -----------------------------------------------------------
+# Ethan — same structure, separate Nightscout site
+# -----------------------------------------------------------
+- resource: !secret nightscout_ethan_url
+  scan_interval: 3600
+  sensor:
+
+    # ---- OMNIPOD: Last Site Change -------------------------
+    - name: "Ethan Omnipod Last Change"
+      unique_id: ethan_omnipod_last_change
+      value_template: >
+        {% set treatments = value_json %}
+        {% set pod = treatments | selectattr('eventType', 'equalto', 'Site Change') | list %}
+        {% if pod | length > 0 %}
+          {{ pod[0].created_at }}
+        {% else %}
+          unknown
+        {% endif %}
+      device_class: timestamp
+      icon: mdi:needle
+
+    # ---- DEXCOM: Last Sensor Start/Change ------------------
+    - name: "Ethan Dexcom Last Change"
+      unique_id: ethan_dexcom_last_change
+      value_template: >
+        {% set treatments = value_json %}
+        {% set sensor = treatments
+            | selectattr('eventType', 'in', ['Sensor Start', 'Sensor Change'])
+            | list %}
+        {% if sensor | length > 0 %}
+          {{ sensor[0].created_at }}
+        {% else %}
+          unknown
+        {% endif %}
+      device_class: timestamp
+      icon: mdi:heart-pulse
