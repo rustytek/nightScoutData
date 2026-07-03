@@ -47,19 +47,31 @@ class NightscoutDataUpdateCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         cannula_age = None
 
         if self.config_entry.data.get("show_sgv", True):
+            # Fetch raw JSON instead of api.get_sgvs(): py_nightscout's SGV model
+            # divides the optional 'delta' field unguarded (None / 18) and crashes
+            # on servers that omit it.
             try:
-                sgv_response = await self.api.get_sgvs()
-                if sgv_response:
-                    entry = sgv_response[0]
-                    raw_sgv = getattr(entry, "sgv", None)
+                entries = await self._fetch_json(
+                    "/api/v1/entries/sgv.json", {"count": "2"}
+                )
+                if entries:
+                    latest_entry = entries[0]
+                    raw_sgv = latest_entry.get("sgv")
                     if raw_sgv is not None:
                         sgv_mgdl_val = float(raw_sgv)
                         sgv_mmol_val = round(float(raw_sgv) / 18.0, 1)
-                    raw_delta = getattr(entry, "delta", None)
+                    raw_delta = latest_entry.get("delta")
+                    if (
+                        raw_delta is None
+                        and raw_sgv is not None
+                        and len(entries) > 1
+                        and entries[1].get("sgv") is not None
+                    ):
+                        raw_delta = float(raw_sgv) - float(entries[1]["sgv"])
                     if raw_delta is not None:
                         delta_mgdl = float(raw_delta)
                         delta_mmol = round(delta_mgdl / 18.0, 2)
-                    direction = entry.direction
+                    direction = latest_entry.get("direction")
             except Exception as error:  # pylint: disable=broad-except
                 _LOGGER.error("Error retrieving Nightscout SGV: %s", error)
 
@@ -94,6 +106,17 @@ class NightscoutDataUpdateCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             "sensor_age": sensor_age,
             "cannula_age": cannula_age,
         }
+
+    async def _fetch_json(self, path: str, params: dict[str, str]) -> Any:
+        """Fetch raw JSON from the Nightscout API, bypassing py_nightscout models."""
+        session = self.api._session
+        if session is None:
+            return None
+        url = f"{self.api.server_url}{path}"
+        async with session.get(url, params=params, **self.api._api_kwargs) as resp:
+            if resp.status != 200:
+                return None
+            return await resp.json()
 
     async def _get_treatment_age(self, event_type: str) -> float | None:
         """Return hours elapsed since the most recent treatment of the given event type."""
