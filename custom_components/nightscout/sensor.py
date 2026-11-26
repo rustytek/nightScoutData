@@ -1,10 +1,18 @@
 """Support for Nightscout sensors."""
 from __future__ import annotations
 
-from typing import Any, cast
+from collections.abc import Callable
+from dataclasses import dataclass
+from typing import Any
 
-from homeassistant.components.sensor import SensorEntity
+from homeassistant.components.sensor import (
+    SensorDeviceClass,
+    SensorEntity,
+    SensorEntityDescription,
+    SensorStateClass,
+)
 from homeassistant.config_entries import ConfigEntry
+from homeassistant.const import UnitOfTime
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
@@ -13,14 +21,164 @@ from .const import DOMAIN, MANUFACTURER, SENSOR_TYPES
 from .coordinator import NightscoutDataUpdateCoordinator
 
 
+@dataclass(frozen=True, kw_only=True)
+class NightscoutDataSensorDescription(SensorEntityDescription):
+    """A sensor read from one section ("loop" or "treatments") of the data."""
+
+    section: str
+    value_key: str
+    attrs: Callable[[dict[str, Any]], dict[str, Any]] | None = None
+
+
+def _iso(value: Any) -> Any:
+    return value.isoformat() if hasattr(value, "isoformat") else value
+
+
+# Pump/loop sensors. Keys iob/basal_rate/battery/reservoir keep their
+# original unique IDs, so existing entity IDs do not change.
+LOOP_SENSORS: tuple[NightscoutDataSensorDescription, ...] = (
+    NightscoutDataSensorDescription(
+        key="iob",
+        name="Insulin on Board",
+        icon="mdi:insulin",
+        native_unit_of_measurement="U",
+        state_class=SensorStateClass.MEASUREMENT,
+        suggested_display_precision=2,
+        section="loop",
+        value_key="iob",
+        attrs=lambda d: {"calculated_at": _iso(d.get("iob_time"))},
+    ),
+    NightscoutDataSensorDescription(
+        key="cob",
+        name="Carbs on Board",
+        icon="mdi:food-apple",
+        native_unit_of_measurement="g",
+        state_class=SensorStateClass.MEASUREMENT,
+        suggested_display_precision=0,
+        section="loop",
+        value_key="cob",
+    ),
+    NightscoutDataSensorDescription(
+        key="basal_rate",
+        name="Basal Rate",
+        icon="mdi:insulin",
+        native_unit_of_measurement="U/hr",
+        state_class=SensorStateClass.MEASUREMENT,
+        section="loop",
+        value_key="temp_basal_rate",
+    ),
+    NightscoutDataSensorDescription(
+        key="battery",
+        name="Pump Battery",
+        icon="mdi:battery",
+        native_unit_of_measurement="%",
+        device_class=SensorDeviceClass.BATTERY,
+        state_class=SensorStateClass.MEASUREMENT,
+        section="loop",
+        value_key="pump_battery",
+    ),
+    NightscoutDataSensorDescription(
+        key="reservoir",
+        name="Insulin Remaining",
+        icon="mdi:insulin",
+        native_unit_of_measurement="U",
+        state_class=SensorStateClass.MEASUREMENT,
+        section="loop",
+        value_key="reservoir",
+    ),
+    NightscoutDataSensorDescription(
+        key="loop_last_run",
+        name="Loop Last Run",
+        icon="mdi:sync",
+        device_class=SensorDeviceClass.TIMESTAMP,
+        section="loop",
+        value_key="last_run",
+        attrs=lambda d: {
+            "failure_reason": d.get("failure_reason"),
+            "suspended": d.get("suspended"),
+            "bolusing": d.get("bolusing"),
+            "uploader": d.get("uploader"),
+        },
+    ),
+)
+
+TREATMENT_SENSORS: tuple[NightscoutDataSensorDescription, ...] = (
+    NightscoutDataSensorDescription(
+        key="last_bolus",
+        name="Last Bolus",
+        icon="mdi:needle",
+        device_class=SensorDeviceClass.TIMESTAMP,
+        section="treatments",
+        value_key="last_bolus_time",
+        attrs=lambda d: {"units": d.get("last_bolus_units")},
+    ),
+    NightscoutDataSensorDescription(
+        key="last_bolus_units",
+        name="Last Bolus Amount",
+        icon="mdi:needle",
+        native_unit_of_measurement="U",
+        suggested_display_precision=2,
+        section="treatments",
+        value_key="last_bolus_units",
+    ),
+    NightscoutDataSensorDescription(
+        key="bolus_today",
+        name="Bolus Insulin Today",
+        icon="mdi:needle",
+        native_unit_of_measurement="U",
+        state_class=SensorStateClass.TOTAL,
+        suggested_display_precision=2,
+        section="treatments",
+        value_key="bolus_today",
+        attrs=lambda d: {
+            "bolus_count": d.get("bolus_count_today"),
+            "automatic_bolus_units": d.get("auto_bolus_today"),
+        },
+    ),
+    NightscoutDataSensorDescription(
+        key="carbs_today",
+        name="Carbs Today",
+        icon="mdi:food-apple",
+        native_unit_of_measurement="g",
+        state_class=SensorStateClass.TOTAL,
+        section="treatments",
+        value_key="carbs_today",
+    ),
+    NightscoutDataSensorDescription(
+        key="last_carbs",
+        name="Last Carbs",
+        icon="mdi:food-apple",
+        device_class=SensorDeviceClass.TIMESTAMP,
+        section="treatments",
+        value_key="last_carbs_time",
+        attrs=lambda d: {"grams": d.get("last_carbs_grams")},
+    ),
+    NightscoutDataSensorDescription(
+        key="prebolus_minutes",
+        name="Last Meal Pre-bolus",
+        icon="mdi:timer-sand",
+        native_unit_of_measurement=UnitOfTime.MINUTES,
+        section="treatments",
+        value_key="prebolus_minutes",
+        attrs=lambda d: {
+            "bolus_units": d.get("prebolus_bolus_units"),
+            "carbs_grams": d.get("last_carbs_grams"),
+            "carbs_time": _iso(d.get("last_carbs_time")),
+            "note": "positive = bolus before carbs; negative = after; "
+            "unknown = no bolus within 90 min of the last carb entry",
+        },
+    ),
+)
+
+
 async def async_setup_entry(
     hass: HomeAssistant, entry: ConfigEntry, async_add_entities: AddEntitiesCallback
 ) -> None:
     """Set up the Nightscout sensors."""
     coordinator: NightscoutDataUpdateCoordinator = hass.data[DOMAIN][entry.entry_id]
 
-    sensors = []
-    
+    sensors: list[SensorEntity] = []
+
     # Get site name, with fallback to the URL or a default value
     site_name = entry.data.get("site_name", entry.data.get("url", "Nightscout"))
 
@@ -42,26 +200,20 @@ async def async_setup_entry(
                 )
             )
 
-    # If pump enabled, add pump sensors
     if entry.data.get("show_pump", True):
-        # Add standard pump sensors like iob, basal, etc.
-        for sensor_type in (
-            "reservoir",
-            "battery",
-            "iob",
-            "basal_rate",
-        ):
+        for description in LOOP_SENSORS:
             sensors.append(
-                NightscoutPumpSensor(
-                    coordinator,
-                    site_name,
-                    coordinator.config_entry.entry_id,
-                    SENSOR_TYPES[sensor_type],
+                NightscoutDataSensor(
+                    coordinator, site_name, entry.entry_id, description
                 )
             )
 
-    # Add the new sensor age sensors regardless of pump status
-    # These are separate entities that should be available even if pump data isn't shown
+    for description in TREATMENT_SENSORS:
+        sensors.append(
+            NightscoutDataSensor(coordinator, site_name, entry.entry_id, description)
+        )
+
+    # Sensor/cannula age sensors are added regardless of pump status
     sensors.append(
         NightscoutAgeSensor(
             coordinator,
@@ -71,7 +223,7 @@ async def async_setup_entry(
             "sensor_age",
         )
     )
-    
+
     sensors.append(
         NightscoutAgeSensor(
             coordinator,
@@ -83,6 +235,14 @@ async def async_setup_entry(
     )
 
     async_add_entities(sensors)
+
+
+def _device_info(entry_id: str, site_name: str) -> dict[str, Any]:
+    return {
+        "identifiers": {(DOMAIN, entry_id)},
+        "name": f"Nightscout ({site_name})",
+        "manufacturer": MANUFACTURER,
+    }
 
 
 class NightscoutSensor(CoordinatorEntity, SensorEntity):
@@ -98,78 +258,56 @@ class NightscoutSensor(CoordinatorEntity, SensorEntity):
         """Initialize the sensor."""
         super().__init__(coordinator)
         self._attr_unique_id = f"{entry_id}_{description.key}"
-        self._attr_device_info = {
-            "identifiers": {(DOMAIN, entry_id)},
-            "name": f"Nightscout ({site_name})",
-            "manufacturer": MANUFACTURER,
-        }
+        self._attr_device_info = _device_info(entry_id, site_name)
         self.entity_description = description
 
     @property
     def native_value(self) -> float | None:
         """Return the state of the sensor."""
-        # Make sure we handle None values for missing sgv values
-        if self.entity_description.key == "sgv" and self.coordinator.data:
-            return self.coordinator.data["sgv"]
-        if self.entity_description.key == "sgv_mmol" and self.coordinator.data:
-            return self.coordinator.data["sgv_mmol"]
-        if self.entity_description.key == "delta" and self.coordinator.data:
-            return self.coordinator.data["delta"]
-        if self.entity_description.key == "delta_mmol" and self.coordinator.data:
-            return self.coordinator.data["delta_mmol"]
-        if self.entity_description.key == "direction" and self.coordinator.data:
-            return self.coordinator.data["direction"]
+        if self.coordinator.data and self.entity_description.key in (
+            "sgv",
+            "sgv_mmol",
+            "delta",
+            "delta_mmol",
+            "direction",
+        ):
+            return self.coordinator.data[self.entity_description.key]
         return None
 
 
-class NightscoutPumpSensor(CoordinatorEntity, SensorEntity):
-    """Implementation of a Nightscout pump sensor."""
+class NightscoutDataSensor(CoordinatorEntity, SensorEntity):
+    """A sensor read from the parsed loop status or treatment summary."""
+
+    entity_description: NightscoutDataSensorDescription
 
     def __init__(
         self,
         coordinator: NightscoutDataUpdateCoordinator,
         site_name: str,
         entry_id: str,
-        description,
+        description: NightscoutDataSensorDescription,
     ) -> None:
         """Initialize the sensor."""
         super().__init__(coordinator)
         self._attr_unique_id = f"{entry_id}_{description.key}"
-        self._attr_device_info = {
-            "identifiers": {(DOMAIN, entry_id)},
-            "name": f"Nightscout ({site_name})",
-            "manufacturer": MANUFACTURER,
-        }
+        self._attr_device_info = _device_info(entry_id, site_name)
         self.entity_description = description
 
+    def _section(self) -> dict[str, Any]:
+        data = self.coordinator.data or {}
+        return data.get(self.entity_description.section) or {}
+
     @property
-    def native_value(self) -> float | None:
+    def native_value(self) -> Any:
         """Return the state of the sensor."""
-        if (
-            not self.coordinator.data
-            or "device" not in self.coordinator.data
-            or not self.coordinator.data["device"]
-        ):
+        return self._section().get(self.entity_description.value_key)
+
+    @property
+    def extra_state_attributes(self) -> dict[str, Any] | None:
+        """Return extra attributes."""
+        if self.entity_description.attrs is None:
             return None
-
-        pump_status = self.coordinator.data["device"]
-
-        if self.entity_description.key == "reservoir" and hasattr(
-            pump_status, "reservoir"
-        ):
-            return cast(float, pump_status.reservoir)
-        if self.entity_description.key == "battery" and hasattr(pump_status, "battery"):
-            return cast(float, pump_status.battery)
-        if self.entity_description.key == "iob" and hasattr(pump_status, "iob"):
-            if hasattr(pump_status.iob, "bolusiob"):
-                return cast(float, pump_status.iob.bolusiob)
-        if self.entity_description.key == "basal_rate" and hasattr(
-            pump_status, "extended"
-        ):
-            if hasattr(pump_status.extended, "TempBasalAbsoluteRate"):
-                return cast(float, pump_status.extended.TempBasalAbsoluteRate)
-
-        return None
+        return self.entity_description.attrs(self._section())
 
 
 class NightscoutAgeSensor(CoordinatorEntity, SensorEntity):
@@ -186,11 +324,7 @@ class NightscoutAgeSensor(CoordinatorEntity, SensorEntity):
         """Initialize the sensor."""
         super().__init__(coordinator)
         self._attr_unique_id = f"{entry_id}_{description.key}"
-        self._attr_device_info = {
-            "identifiers": {(DOMAIN, entry_id)},
-            "name": f"Nightscout ({site_name})",
-            "manufacturer": MANUFACTURER,
-        }
+        self._attr_device_info = _device_info(entry_id, site_name)
         self.entity_description = description
         self._data_key = data_key
 

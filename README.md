@@ -4,7 +4,7 @@ Custom Home Assistant integration (`custom_components/nightscout`) for pulling C
 
 ## Contents
 
-- `custom_components/nightscout/` — HA custom integration (domain: `nightscout`). Polls the Nightscout API every minute for SGV, pump status, and sensor/cannula age; configured via the HA UI config flow (URL + optional API key).
+- `custom_components/nightscout/` — HA custom integration (domain: `nightscout`). Polls the Nightscout API every minute for SGV, insulin/carbs on board (Loop, Trio or AndroidAPS uploads), loop last-run, pump status, sensor/cannula age, and a 24 h treatment summary: last bolus, bolus insulin today, carbs today, last carbs and the last meal's pre-bolus time. Configured via the HA UI config flow (URL + optional API key), one entry per Nightscout site; installed through HACS.
 - `nightscout_sensors.yaml` — REST sensor config tracked here and deployed to the HA `/config/` directory. Fetches recent treatments from the Nightscout treatments API and derives pod/sensor "last change" and "change due" sensors for each tracked child.
 
 ## Status

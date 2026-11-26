@@ -11,6 +11,11 @@ Custom Home Assistant integration (`custom_components/nightscout`) for pulling C
 
 - `custom_components/nightscout/` — HA custom integration (domain: `nightscout`)
   - Polls Nightscout API every 1 min for SGV, pump status, sensor/cannula age
+  - **v0.3.0:** device status and treatments are read as raw JSON (not py_nightscout models). IOB/COB/loop-run come from `loop.*` (Loop), `openaps.*` (Trio) or `pump.iob` (AndroidAPS). Both kids run **Loop**, which never fills `pump.iob`, so IOB was always unknown before 0.3.0.
+  - Treatment sensors (last 24 h of `/api/v1/treatments.json`): Last Bolus (timestamp, `units` attr), Last Bolus Amount, Bolus Insulin Today (manual only; `automatic_bolus_units` attr), Carbs Today, Last Carbs, Last Meal Pre-bolus (minutes the nearest manual bolus within 90 min came before the latest carb entry; negative = after). Loop marks auto-boluses `automatic: true`; those are excluded from the manual figures.
+  - Loop Last Run (timestamp) with `failure_reason`/`suspended`/`bolusing` attrs — stale = loop or pod not running.
+  - Installed through **HACS** (custom repo, tracks `main` by commit): push to GitHub, then update the HACS entry and restart HA. No Samba needed for the integration itself.
+  - One config entry per Nightscout site. Amelia's entry points at `amelia.nightscoutpro.com`; Ethan needs his own entry for `ethanr.nightscoutpro.com` (owner adds it in the UI with his read token).
   - Config entry created via UI config flow (URL + optional API key)
   - No reconfigure flow currently — to change URL, delete entry and re-add
 
