@@ -95,7 +95,7 @@ class NightscoutDataUpdateCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             )
             treatments = await self._fetch_json(
                 "/api/v1/treatments.json",
-                {"find[created_at][$gte]": since, "count": "500"},
+                {"find[created_at][$gte]": since, "count": "1000"},
             )
             if treatments is not None:
                 treatments_summary = summarize_treatments(
@@ -241,8 +241,9 @@ def parse_loop_status(status: dict[str, Any]) -> dict[str, Any]:
 
 # Loop uploads every bolus as "Correction Bolus"; automatic (auto-bolus
 # dosing strategy) ones carry automatic=true.
-_BOLUS_TYPES = ("Correction Bolus", "Meal Bolus", "Bolus", "Snack Bolus", "SMB")
-_CARB_TYPES = ("Carb Correction", "Meal Bolus", "Snack Bolus")
+# Any treatment with insulin > 0 counts as a bolus except these; any
+# treatment with carbs > 0 counts as a carb entry.
+_NOT_BOLUS_TYPES = ("Temp Basal", "Basal", "Profile Switch", "Suspend Pump")
 # Pair the latest carb entry with the nearest manual bolus inside this window.
 PREBOLUS_WINDOW = timedelta(minutes=90)
 
@@ -253,17 +254,19 @@ def summarize_treatments(
     """Summarize recent treatments into bolus and carb figures."""
     boluses: list[tuple[datetime, float, bool]] = []
     carbs: list[tuple[datetime, float]] = []
+    event_counts: dict[str, int] = {}
     for item in treatments:
         when = _parse_ts(item.get("created_at") or item.get("timestamp"))
         if when is None:
             continue
         event = item.get("eventType")
+        event_counts[str(event)] = event_counts.get(str(event), 0) + 1
         insulin = _num(item.get("insulin"))
-        if insulin and insulin > 0 and (event in _BOLUS_TYPES or event is None):
-            automatic = bool(item.get("automatic")) or event == "SMB"
+        if insulin and insulin > 0 and event not in _NOT_BOLUS_TYPES:
+            automatic = item.get("automatic") is True or event == "SMB"
             boluses.append((when, insulin, automatic))
         grams = _num(item.get("carbs"))
-        if grams and grams > 0 and (event in _CARB_TYPES or event is None):
+        if grams and grams > 0:
             carbs.append((when, grams))
     boluses.sort(key=lambda b: b[0], reverse=True)
     carbs.sort(key=lambda c: c[0], reverse=True)
@@ -283,6 +286,8 @@ def summarize_treatments(
         "last_carbs_grams": carbs[0][1] if carbs else None,
         "prebolus_minutes": None,
         "prebolus_bolus_units": None,
+        "records_24h": len(treatments),
+        "event_types_24h": event_counts,
     }
     if carbs:
         carb_time = carbs[0][0]

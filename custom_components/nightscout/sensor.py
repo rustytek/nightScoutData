@@ -133,6 +133,8 @@ TREATMENT_SENSORS: tuple[NightscoutDataSensorDescription, ...] = (
         attrs=lambda d: {
             "bolus_count": d.get("bolus_count_today"),
             "automatic_bolus_units": d.get("auto_bolus_today"),
+            "records_24h": d.get("records_24h"),
+            "event_types_24h": d.get("event_types_24h"),
         },
     ),
     NightscoutDataSensorDescription(
